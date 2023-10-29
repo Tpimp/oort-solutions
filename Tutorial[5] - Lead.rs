@@ -13,17 +13,21 @@
 use oort_api::prelude::*;
 const BULLET_SPEED: f64 = 1000.0; // m/s
 
-/****************************************************
+/**************************************************************
 * Tutorial 5: Lead Solution
 * Author: Christopher Dean
 * Last Update: 10/27/23
-***************************************************/
+* Now has ability to swap in captain-seahorse turning functions
+* utilizing the !SEEK_AND_DESTROY unit test
+****************************************************************/
 const TICKS_PER_SECOND: f64 = 60.0;
 const BULLET_SPEED_PER_TICK: f64 = BULLET_SPEED / TICKS_PER_SECOND;
 const TICKS_TO_WAIT: f64 = 120.0;
 const TICKS_TO_ACCEL: f64 =  TICKS_TO_WAIT + 36.0;
 const TICKS_PER_FIRE: u32 = 4;
 const SEEK_AND_DESTROY: u64 = 1337;
+
+const USE_SEAHORSE_TURN: bool = false; // USE TO DISABLE OR ENABLE SEAHORSE TURN
 
 /*****************************************************
 * Utility Structs
@@ -39,9 +43,12 @@ pub struct CurveBehavior{
     throttle: f64
 }
 
+fn calculate_angular_velocity(tune_factor: f64, angle_to_mark: f64) -> f64 {
+    let c1: f64 = 2.0 * tune_factor.sqrt();
+    tune_factor * angle_to_mark - c1 * angular_velocity()
+}
 
 pub struct Ship {
-    turn_ticks_start : u32,
     target_heading :  Option<f64>,
     target_position: Option<Vec2>,
     target_lead_position: Option<Vec2>,
@@ -49,7 +56,6 @@ pub struct Ship {
     counter: f64,
     objective: u64,
     state: String,
-    last_benchmark: u32,
     should_fire_gun0: bool,
     trigger_tick: u32,
     gun0_fire_count: u32,
@@ -59,20 +65,18 @@ pub struct Ship {
 impl Ship {
     pub fn new() -> Ship {
         Ship {
-            turn_ticks_start : 0,
             target_heading : None,
             target_position : None,
             target_lead_position: None,
             next_torque: 0.0,
-            counter: 0.0,
+            counter: 120.0,
             objective: SEEK_AND_DESTROY,
             //objective: !SEEK_AND_DESTROY, // For Fun, uncomment and comment the above line
             state: String::from("starting"),
-            last_benchmark: 0,
             should_fire_gun0: false,
             trigger_tick: 0,
             gun0_fire_count: 0,
-            gun0_burst_fire: 4
+            gun0_burst_fire: 8 // USE To configure burst fire count
         }
     }
 
@@ -109,6 +113,8 @@ impl Ship {
         return ret_torque;
     }
 
+
+
     // low level "turn(angle)" replacement, rotates as quickly as possible
     pub fn find_highest_angular_curve(&mut self, start_velocity: f64, rotation_angle: f64) -> CurveBehavior {
         let mut curve = CurveBehavior{ valid:false, decelerate: false, ticks_to_accel: 0, throttle:0.0};
@@ -124,7 +130,7 @@ impl Ship {
             let mut ticks_to_accelerate = 0.0;
             let mut not_done = true;
             while ticks_to_accelerate < 10.0 && not_done {
-                let next_speed = (max_angular_acceleration() * ticks_to_accelerate);
+                let next_speed = max_angular_acceleration() * ticks_to_accelerate;
                 let new_ticks_to_stop = next_speed.abs() / max_angular_acceleration();
                 let ticks_left = rotation_angle.abs() / next_speed;
                 if new_ticks_to_stop > ticks_left {
@@ -157,11 +163,13 @@ impl Ship {
     }
 
     pub fn fire_burst(&mut self) {
-        if self.gun0_fire_count / TICKS_PER_FIRE >= self.gun0_burst_fire {
-            self.should_fire_gun0 = false;
+        if self.gun0_fire_count / TICKS_PER_FIRE >= (self.gun0_burst_fire + 1) {
             self.gun0_fire_count = 0;
+            self.should_fire_gun0 = false;
         } else {
-            fire(0);
+            if self.gun0_fire_count / TICKS_PER_FIRE < self.gun0_burst_fire  {
+                fire(0);
+            }
             self.gun0_fire_count += 1;
         }
     }
@@ -178,20 +186,15 @@ impl Ship {
 ********************************************************************/
     pub fn track(&mut self, target: Vec2) -> Vec2 {
         if self.target_heading.is_some() {
-            self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.008;        
+            self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.01;        
         }else {
             self.should_fire_gun0 = false;
         }
 
         if target.x != 0.0 && target.y != 0.0 {
-            let length_meters = (target - position()).length();
-            debug!( "Length: {} meters", length_meters);
-            let seconds_to_travel = length_meters / BULLET_SPEED; // meters / 1000 meters per second = X seconds
-            let ticks_to_travel = seconds_to_travel / TICKS_PER_SECOND;
-            debug!( "Seconds to Travel: {}", seconds_to_travel);
-            debug!( "Ticks to Travel: {}", ticks_to_travel);
-            let distance_ratio = (length_meters / BULLET_SPEED);        
-            return target + (target_velocity() * distance_ratio);
+            let length_meters = (target - position()).length() as f64;
+            let distance_ratio = (length_meters / BULLET_SPEED);
+            return target + target_velocity() * distance_ratio;
         }
         return vec2(0.0,0.0);
     }
@@ -202,10 +205,21 @@ impl Ship {
 * This code is responsible for updating the ships next torque and accelerate values
 *******************************************************************************************************************/
     pub fn update_engine_vectors(&mut self) {        
-        if self.target_heading.is_some() { // Calculate the fastest rotation curve current heading, target_heading
-            let acceleration_curve = self.find_highest_angular_curve(angular_velocity(), angle_diff(heading(),
-                                                                     self.target_heading.unwrap()));
-            self.next_torque = acceleration_curve.throttle;
+        if self.target_heading.is_some() && self.target_lead_position.is_some() { // Calculate the fastest rotation curve current heading, target_heading
+            if USE_SEAHORSE_TURN {
+                // using captain-seahorse turning solution
+                let current_diff = angle_diff(heading(), (self.target_lead_position.unwrap() - position()).angle());
+                if current_diff.abs() > 0.1 {
+                    self.next_torque  =calculate_angular_velocity(40.0, current_diff);
+                } else {
+                    self.next_torque = calculate_angular_velocity(10_000.0, current_diff);
+                }
+            } else {// using my turning solution
+                let acceleration_curve = self.find_highest_angular_curve(angular_velocity(), angle_diff(heading(),
+                                                                        self.target_heading.unwrap()));
+                self.next_torque = acceleration_curve.throttle;
+            }
+
         } else {
             self.next_torque = 0.0;
         }
@@ -217,6 +231,15 @@ impl Ship {
             accelerate(self.target_position.unwrap());            
         }
     }
+
+pub fn turn_unit_test(&mut self) {
+            if self.counter < 120.0 {
+                self.counter += 1.0;
+            } else {
+                self.target_lead_position = Some(vec2(rand(-world_size(), world_size()),rand(-world_size(),world_size())));
+                self.counter = 0.0;
+            } 
+}
 
 /********************************************************************************************************
 * ** Mission Specific functions **
@@ -230,19 +253,14 @@ impl Ship {
         if self.objective == SEEK_AND_DESTROY {
             self.target_lead_position = Some(self.track(target()));  // update aim and tracking position
         } else {
-            if self.counter < 60.0 {
-                self.counter += 1.0;
-            } else {
-                self.target_lead_position = Some(vec2(rand(-world_size(), world_size()),rand(-world_size(),world_size())));
-                self.counter = 0.0;
-            } 
+            self.turn_unit_test();
         }
         // calculate heading from lead position
         if self.target_lead_position.is_some() {
             self.target_heading = Some ((self.target_lead_position.unwrap() - position()).angle());
         }
-        self.update_engine_vectors();
         self.update_guns();
+        self.update_engine_vectors();
         self.draw_diagnostics();
     }  
 
@@ -251,21 +269,21 @@ impl Ship {
 * Functions used to update the systems diagnostics
 *********************************************************************************************************/
     pub fn draw_diagnostics(&mut self) {
-        let dp = target() - position();
-        debug!("distance to target: {}", dp.length());
-        debug!("time to target: {}", dp.length() / BULLET_SPEED);
-        debug!("Current State: {}", self.state);
-        debug!("Burst Count: {}", self.gun0_burst_fire);
+        
+        //debug!("Current State: {}", self.state);
         debug!("Angular Velocity: {}", angular_velocity());
         debug!("Counter: {}", self.counter);
-        debug!("Ticks to stop {}", self.last_benchmark);
         debug!("Ships Heading {}", heading());
         if self.target_heading.is_some() {
             debug!("Target Heading {}", self.target_heading.unwrap());
         }
         draw_line(position(), target(), 0x00ff00);
         if self.target_lead_position.is_some() {
-            draw_line(position(), self.target_lead_position.unwrap(), 0xff0000);
+            let lead_position = self.target_lead_position.unwrap();
+            let dp = (lead_position - position());
+            debug!("distance to target: {} meters", dp.length());
+            debug!("time to target: {} seconds", dp.length() / BULLET_SPEED);
+            draw_line(position(), lead_position, 0xff0000);
         }
     }
 /*******************************************************************************************************/
