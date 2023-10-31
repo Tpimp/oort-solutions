@@ -39,6 +39,8 @@ pub struct Ship {
     target_heading :  Option<f64>,
     target_position: Option<Vec2>,
     target_lead_position: Option<Vec2>,
+    target_velocity: Option<Vec2>,
+    target_acceleration: Option<Vec2>,
     next_torque: f64,
     counter: f64,
     objective: u64,
@@ -52,10 +54,12 @@ pub struct Ship {
 impl Ship {
     pub fn new() -> Ship {
         Ship {
-            use_burst_fire: true,
+            use_burst_fire: false,
             target_heading : None,
             target_position : None,
             target_lead_position: None,
+            target_velocity: None,
+            target_acceleration: None,
             next_torque: 0.0,
             counter: 120.0,
             objective: SEEK_AND_DESTROY,
@@ -179,15 +183,22 @@ impl Ship {
     // 
     pub fn track(&mut self, target: Vec2, target_velocity: Vec2, velocity: Vec2) -> Vec2 {
         let mut next_target = vec2(0.0,0.0);
-            if self.target_heading.is_some() {
-                self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.018;        
-            }else {
-                self.should_fire_gun0 = false;
-            }
+        if self.target_heading.is_some() {
+            self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.013;        
+        }else {
+            self.should_fire_gun0 = false;
+        }
         if target.x != 0.0 && target.y != 0.0 {
             let length_meters = (target - position()).length() as f64;
-            let mut distance_ratio = (length_meters / BULLET_SPEED);            
-            next_target = target + (target_velocity - velocity) * distance_ratio;
+            let mut distance_ratio = (length_meters / BULLET_SPEED);
+            // account for acceleration
+            let mut target_acceleration = vec2(0.0, 0.0);
+            if self.target_velocity.is_some() {
+                target_acceleration = ((target_velocity - self.target_velocity.unwrap()) * TICKS_PER_SECOND)/2.0;
+                self.target_acceleration = Some(target_acceleration);
+            }
+            next_target = target + (target_velocity - velocity + target_acceleration) * distance_ratio;
+            self.target_velocity = Some(target_velocity);
         }
 
         return next_target;
@@ -217,7 +228,7 @@ impl Ship {
         if self.target_heading.is_some() && self.target_lead_position.is_some() { // Calculate the fastest rotation curve current heading, target_heading
             let current_diff = angle_diff(heading(), (self.target_lead_position.unwrap() - position()).angle());
             if current_diff.abs() > 0.25 {
-                self.next_torque = calculate_angular_velocity(50.0, current_diff);                
+                self.next_torque = calculate_angular_velocity(55.79 * current_diff.abs(), current_diff);                
             } else {// using my turning solution
                 let acceleration_curve = self.find_highest_angular_curve(angular_velocity(), angle_diff(heading(),
                                                                         self.target_heading.unwrap()));
@@ -288,6 +299,9 @@ pub fn turn_unit_test(&mut self) {
             let dp = (lead_position - position());
             debug!("distance to target: {} meters", dp.length());
             debug!("time to target: {} seconds", dp.length() / BULLET_SPEED);
+            if self.target_acceleration.is_some() {
+                debug!("Target Acceleration: {} meters/s", self.target_acceleration.unwrap());
+            }
             draw_line(position(), lead_position, 0xff0000);
         }
     }
