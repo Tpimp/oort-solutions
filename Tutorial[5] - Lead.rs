@@ -21,7 +21,7 @@ const BULLET_SPEED: f64 = 1000.0; // m/s
 /**************************************************************
 * Tutorial 5: Lead Solution
 * Author: Christopher Dean
-* Last Update: 10/27/23
+* Last Update: 10/30/23
 * Now has ability to swap in captain-seahorse turning functions
 * utilizing the !SEEK_AND_DESTROY unit test
 ****************************************************************/

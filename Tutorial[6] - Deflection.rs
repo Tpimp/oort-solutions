@@ -4,7 +4,7 @@ const BULLET_SPEED: f64 = 1000.0; // m/s
 /**************************************************************
 * Tutorial 6: Deflection
 * Author: Christopher Dean
-* Last Update: 10/27/23
+* Last Update: 10/30/23
 * Improved fast and accurate turning, now approaching target
 * 4.880s on Tutorial 6
 ****************************************************************/
