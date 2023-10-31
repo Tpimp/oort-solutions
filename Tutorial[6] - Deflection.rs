@@ -1,29 +1,12 @@
-// Tutorial: Deflection
-// Destroy the enemy ship. Its position is given by the "target" function and velocity by the
-// "target_velocity" function.
-//
-// Hint: p = p₀ + v₀t + ½at² (the third equation of kinematics)
-// Hint: target() + target_velocity() * t gives the position of the target after t seconds.
-//
-// You can scale a vector by a number: vec2(a, b) * c == vec2(a * c, b * c)
-//
-// p.s. You can change your username by clicking on it at the top of the page.
-// Tutorial: Lead
-// Destroy the enemy ship. Its position is given by the "target" function and velocity by the
-// "target_velocity" function. Your ship is not able to accelerate in this scenario.
-//
-// This is where the game becomes challenging! You'll need to lead the target
-// by firing towards where the target will be by the time the bullet gets there.
-
 use oort_api::prelude::*;
 const BULLET_SPEED: f64 = 1000.0; // m/s
 
 /**************************************************************
-* Tutorial 5: Lead Solution
+* Tutorial 6: Deflection
 * Author: Christopher Dean
 * Last Update: 10/27/23
-* Now has ability to swap in captain-seahorse turning functions
-* utilizing the !SEEK_AND_DESTROY unit test
+* Improved fast and accurate turning, now approaching target
+* 4.880s on Tutorial 6
 ****************************************************************/
 const TICKS_PER_SECOND: f64 = 60.0;
 const BULLET_SPEED_PER_TICK: f64 = BULLET_SPEED / TICKS_PER_SECOND;
@@ -31,8 +14,6 @@ const TICKS_TO_WAIT: f64 = 120.0;
 const TICKS_TO_ACCEL: f64 =  TICKS_TO_WAIT + 36.0;
 const TICKS_PER_FIRE: u32 = 4;
 const SEEK_AND_DESTROY: u64 = 1337;
-
-const USE_SEAHORSE_TURN: bool = false; // USE TO DISABLE OR ENABLE SEAHORSE TURN
 
 /*****************************************************
 * Utility Structs
@@ -54,6 +35,7 @@ fn calculate_angular_velocity(tune_factor: f64, angle_to_mark: f64) -> f64 {
 }
 
 pub struct Ship {
+    use_burst_fire: bool,
     target_heading :  Option<f64>,
     target_position: Option<Vec2>,
     target_lead_position: Option<Vec2>,
@@ -70,6 +52,7 @@ pub struct Ship {
 impl Ship {
     pub fn new() -> Ship {
         Ship {
+            use_burst_fire: true,
             target_heading : None,
             target_position : None,
             target_lead_position: None,
@@ -81,7 +64,7 @@ impl Ship {
             should_fire_gun0: false,
             trigger_tick: 0,
             gun0_fire_count: 0,
-            gun0_burst_fire: 8 // USE To configure burst fire count
+            gun0_burst_fire: 10 // USE To configure burst fire count
         }
     }
 
@@ -179,8 +162,12 @@ impl Ship {
         }
     }
     pub fn update_guns(&mut self) {
-        if self.should_fire_gun0 == true {            
-            self.fire_burst();
+        if self.should_fire_gun0 == true {
+            if self.use_burst_fire {
+                self.fire_burst();
+            } else {
+                fire(0);
+            }
         }
     }
 
@@ -191,18 +178,19 @@ impl Ship {
 ********************************************************************/
     // 
     pub fn track(&mut self, target: Vec2, target_velocity: Vec2, velocity: Vec2) -> Vec2 {
-        if self.target_heading.is_some() {
-            self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.01;        
-        }else {
-            self.should_fire_gun0 = false;
-        }
-
+        let mut next_target = vec2(0.0,0.0);
+            if self.target_heading.is_some() {
+                self.should_fire_gun0 = angle_diff(heading(), self.target_heading.unwrap()).abs() < 0.018;        
+            }else {
+                self.should_fire_gun0 = false;
+            }
         if target.x != 0.0 && target.y != 0.0 {
             let length_meters = (target - position()).length() as f64;
             let mut distance_ratio = (length_meters / BULLET_SPEED);            
-            return target + (target_velocity - velocity) * distance_ratio;
+            next_target = target + (target_velocity - velocity) * distance_ratio;
         }
-        return vec2(0.0,0.0);
+
+        return next_target;
     }
 /***********************************************************************/
 
@@ -211,8 +199,15 @@ impl Ship {
 * Handles navigating and calculating the next thruster vectors based on the target_position
 * The navigation system also helps to steer heading to target_heading
 ********************************************************************************************************************/
-    pub fn approach_and_orbit(&mut self, orbit_distance: f64, target_position: Vec2) -> Vec2 {
-        return vec2(0.0,0.0);
+    pub fn approach_and_orbit(&mut self, orbit_min_distance: f64, orbit_max_distance: f64, position: Vec2, target_position: Vec2, target_velocity: Vec2) -> Vec2 {
+        let distance = target_position - position;
+        if orbit_min_distance < distance.length() {
+           return 0.02 * (distance + target_velocity);
+        }
+        if orbit_max_distance > distance.length() {
+           return -0.08 * (distance + target_velocity);
+        }
+        return vec2(0.0, 0.0);
     }
 /********************************************************************************************************************
 * ** Engine Thrust and Drive System **
@@ -220,14 +215,9 @@ impl Ship {
 *******************************************************************************************************************/
     pub fn update_engine_vectors(&mut self) {        
         if self.target_heading.is_some() && self.target_lead_position.is_some() { // Calculate the fastest rotation curve current heading, target_heading
-            if USE_SEAHORSE_TURN {
-                // using captain-seahorse turning solution
-                let current_diff = angle_diff(heading(), (self.target_lead_position.unwrap() - position()).angle());
-                if current_diff.abs() > 0.1 {
-                    self.next_torque = calculate_angular_velocity(40.0, current_diff);
-                } else {
-                    self.next_torque = calculate_angular_velocity(10_000.0, current_diff);
-                }
+            let current_diff = angle_diff(heading(), (self.target_lead_position.unwrap() - position()).angle());
+            if current_diff.abs() > 0.25 {
+                self.next_torque = calculate_angular_velocity(50.0, current_diff);                
             } else {// using my turning solution
                 let acceleration_curve = self.find_highest_angular_curve(angular_velocity(), angle_diff(heading(),
                                                                         self.target_heading.unwrap()));
@@ -247,12 +237,12 @@ impl Ship {
     }
 
 pub fn turn_unit_test(&mut self) {
-            if self.counter < 120.0 {
-                self.counter += 1.0;
-            } else {
-                self.target_lead_position = Some(vec2(rand(-world_size(), world_size()),rand(-world_size(),world_size())));
-                self.counter = 0.0;
-            } 
+    if self.counter < 120.0 {
+        self.counter += 1.0;
+    } else {
+        self.target_lead_position = Some(vec2(rand(-world_size(), world_size()),rand(-world_size(),world_size())));
+        self.counter = 0.0;
+    } 
 }
 
 /********************************************************************************************************
@@ -265,8 +255,8 @@ pub fn turn_unit_test(&mut self) {
         // mission ends, always a target
         // track target
         if self.objective == SEEK_AND_DESTROY {
-            self.target_lead_position = Some(self.track(target(), target_velocity(), position()));  // update aim and tracking position
-            self.target_position = Some(self.approach_and_orbit(300.0, target())); // 300 meter orbit
+            self.target_lead_position = Some(self.track(target(), target_velocity(), velocity()));  // update aim and tracking position
+            self.target_position = Some(self.approach_and_orbit(250.0, 400.0, position(), self.target_lead_position.unwrap(), target_velocity())); // 300 meter orbit
         } else {
             self.turn_unit_test();
         }
