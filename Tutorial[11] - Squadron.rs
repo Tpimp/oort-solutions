@@ -1,36 +1,10 @@
+// Tutorial: Squadron
+// Destroy the enemy ships. They now shoot back.
 // Tutorial: Missiles
 // Destroy the enemy ship with your missiles.
 // Hint: https://en.wikipedia.org/wiki/Proportional_navigation
 // use oort_api::prelude::*;
 
-// pub struct Ship {}
-
-// impl Ship {
-//     pub fn new() -> Ship {
-//         Ship {}
-//     }
-
-//     pub fn tick(&mut self) {
-//         if class() == Class::Missile {
-//             if let Some(contact) = scan() {
-//                 let dp = contact.position - position();
-//                 let dv = contact.velocity - velocity();
-//                 turn_to(dp.angle());
-//                 accelerate(dp + dv);
-//                 if dp.length() < 2.0 {
-//                     explode();
-//                 }
-//             }
-//         } else {
-//             fire(1);
-//         }
-//     }
-// }
-
-// fn turn_to(target_heading: f64) {
-//     let heading_error = angle_diff(heading(), target_heading);
-//     turn(10.0 * heading_error);
-// }
 
 // Tutorial: Radio
 // Destroy the enemy ship. Your radar is broken, but a radio signal on channel
@@ -51,6 +25,37 @@ const BULLET_SPEED_PER_TICK: f64 = BULLET_SPEED / TICKS_PER_SECOND;
 const TICKS_PER_FIRE: u32 = 4;
 const SEEK_AND_DESTROY: u64 = 1337;
 const POSITIONING_CHANNEL: usize = 2;
+
+/************************************************************
+*  ** Hive Mind **
+*
+*
+************************************************************/
+static mut TIMES_CALLED: u32 = 0;
+pub struct HiveMind {
+    ship_count: u32,
+    ship_ids: Vec<u32>
+}
+
+impl HiveMind {
+    pub fn hive_mind_tick(&mut self) {
+
+    }
+    pub fn register_ship(&mut self, ship: &Ship, id: u32) {
+        if ship.ship_class == Class::Fighter && !self.ship_ids.contains(&id){
+            self.ship_count += 1;
+            self.ship_ids.push(id);
+        }
+    }
+    pub fn new() -> HiveMind {
+        HiveMind {
+            ship_count: 0,
+            ship_ids: Vec::new()
+        }
+    }
+}
+static mut HIVE_MIND:HiveMind = HiveMind{ship_count:0, ship_ids: Vec::new()};
+
 
 /*****************************************************
 * Utility Structs
@@ -103,13 +108,14 @@ pub struct Ship {
     scan_velocity: Option<Vec2>,
     radar_cache: Option<RadarData>,
     missle_contact_position: Option<Vec2>,
-    missle_contact_velocity: Option<Vec2>
+    missle_contact_velocity: Option<Vec2>,
+    ship_class: Class
     
 }
 
 impl Ship {
     pub fn new() -> Ship {
-        Ship {
+        let new_ship = Ship {
             use_burst_fire: false,
             target_heading : None,
             target_position : None,
@@ -129,8 +135,14 @@ impl Ship {
             scan_velocity: None,
             radar_cache: None,
             missle_contact_position: None,
-            missle_contact_velocity: None
+            missle_contact_velocity: None,
+            ship_class: class()
+        };
+
+        unsafe {
+            TIMES_CALLED += 1;
         }
+        return new_ship;
     }
     /******************************************************************
     * ** Radio System **
@@ -178,12 +190,18 @@ impl Ship {
             if self.use_burst_fire {
                 self.fire_burst();
             } else {
-                fire(1);
+                fire(0);
+                //fire(1);
             }
         }
     }
 
     pub fn update_missle(&mut self) {
+        //if let Some(contact) = scan() {
+            // self.scan_position = Some(contact.position);
+            // self.scan_velocity = Some(contact.velocity);
+            // let dp = contact.position - position();
+            // let dv = contact.velocity - velocity();  
         self.update_radar();
         // calculate heading from lead position
         let mut has_target = false;
@@ -201,7 +219,7 @@ impl Ship {
             }
         }
         if has_target {
-            let line_diff = (target_position - position());
+            let line_diff = target_position - position();
             let current_diff = angle_diff(heading(), line_diff.angle());
             self.target_heading = Some(line_diff.angle());
             debug!("Target Position: {}", target_position);
@@ -211,12 +229,26 @@ impl Ship {
             debug!("Distance from target (length): {}", line_diff.length());
             debug!("Velocity: {}", velocity());
             turn(current_diff);
-            accelerate((line_diff + (target_velocity * 1.565  * ((line_diff/BULLET_SPEED) + 0.35))));            
+            accelerate(line_diff + (target_velocity * 1.565  * ((line_diff/BULLET_SPEED) + 0.35)));            
             draw_line(target_position, position(), 0xff0000);
-            if line_diff.length() <= 122.0 ||  fuel() == 0.0 {
+            if line_diff.length() <= 122.0  {
                 explode();
             }
-        }         
+        } else {
+            accelerate(vec2(1000.0,0.0));
+        }
+            //self.update_guns();
+
+
+        // Update Angular Velocity
+        // Update Planar Thrust Vectors
+        
+           
+        // } else {
+        //     self.missle_contact_position = None;
+        //     self.missle_contact_velocity = None;
+        // }
+         
     }
 
 /*******************************************************************
@@ -248,8 +280,10 @@ impl Ship {
         let scanned = scan();
         if scanned.is_some() {
             let result = scanned.unwrap();
-            self.scan_position = Some(result.position);
-            self.scan_velocity = Some(result.velocity);
+            if result.class == Class::Fighter {
+                self.scan_position = Some(result.position);
+                self.scan_velocity = Some(result.velocity);
+            }
         } else {
             self.scan_position = None;
             self.scan_velocity = None;
@@ -432,6 +466,35 @@ impl Ship {
         }
     }
 
+
+    pub fn update_normal_ship(&mut self) {
+        self.update_radar();
+        self.send_radio();
+        if self.objective == SEEK_AND_DESTROY { // find and kill
+            if self.scan_position.is_some() {
+                let target_position = self.scan_position.unwrap();
+                let target_velocity = self.scan_velocity.unwrap();
+                self.target_lead_position = self.track(target_position, target_velocity, velocity());  // update aim and tracking position
+            } else {
+                self.target_lead_position = None;
+            }
+            if self.target_lead_position.is_some() {
+                self.target_position = Some(self.approach_and_orbit(550.0, 1050.0, position(), self.target_lead_position.unwrap(), target_velocity())); // 300 meter orbit
+            }
+        } else { // locate next target
+
+        }
+        // calculate heading from lead position
+        if self.target_lead_position.is_some() {
+            self.target_heading = Some ((self.target_lead_position.unwrap() - position()).angle());
+        } else {            
+            self.target_heading = None;
+        }
+        self.update_guns();
+        self.update_engine_vectors();
+        self.draw_diagnostics();
+    }
+
 /********************************************************************************************************
 * ** Mission Specific functions **
 * Functions used to update the systems diagnostics
@@ -441,36 +504,41 @@ impl Ship {
         // if target, track
         // mission ends, always a target
         // track target
-        
-        if class() == Class::Missile {
-            self.update_missle();
-        } else {
-            self.update_radar();
-            self.send_radio();
-            if self.objective == SEEK_AND_DESTROY { // find and kill
-                if self.scan_position.is_some() {
-                    let target_position = self.scan_position.unwrap();
-                    let target_velocity = self.scan_velocity.unwrap();
-                    self.target_lead_position = self.track(target_position, target_velocity, velocity());  // update aim and tracking position
-                } else {
-                    self.target_lead_position = None;
-                }
-                if self.target_lead_position.is_some() {
-                    self.target_position = Some(self.approach_and_orbit(550.0, 1050.0, position(), self.target_lead_position.unwrap(), target_velocity())); // 300 meter orbit
-                }
-            } else { // locate next target
 
-            }
-            // calculate heading from lead position
-            if self.target_lead_position.is_some() {
-                self.target_heading = Some ((self.target_lead_position.unwrap() - position()).angle());
-            } else {            
-                self.target_heading = None;
-            }
-            self.update_guns();
-            self.update_engine_vectors();
-            self.draw_diagnostics();
+        unsafe{
+            HIVE_MIND.register_ship(self, id());
         }
+        set_radar_max_distance(world_size());
+        if class() == Class::Missile {
+             self.update_missle();
+        }else {
+            if(id() == 1) {
+                let current_ticks = current_tick();
+                if(current_ticks < 600) {
+                    accelerate(vec2(10.0, 0.0));                    
+                    fire(0);
+                    fire(1);
+                } else if current_ticks > 600 && current_ticks < 750 {             
+                    accelerate(vec2(25.0, 0.0));                    
+                    fire(0);
+                    fire(1);
+                } else {
+                    self.update_normal_ship();
+                }
+            } else {
+                if current_tick() < 1200 {
+                    fire(0);
+                    fire(1);
+                    accelerate(vec2(50.0, 0.0));
+                    //torque(rand(-0.02, 0.02));
+                }else {
+                    self.update_normal_ship();
+                }
+            }
+        }
+        // else {
+        //    
+        // }
     }  
 
 /********************************************************************************************************
@@ -483,6 +551,13 @@ impl Ship {
         debug!("Angular Velocity: {}", angular_velocity());
         debug!("Ships Heading {}", heading());
         debug!("Ships Velocity {}", velocity());
+        unsafe {
+            debug!("Times Called {}", TIMES_CALLED);
+        }
+        unsafe {
+            debug!("Hivemind controlling {}", HIVE_MIND.ship_count);
+            debug!("Ship ID count {}", HIVE_MIND.ship_ids.len());
+        }
         if self.target_heading.is_some() {
             debug!("Target Heading {}", self.target_heading.unwrap());
         }
