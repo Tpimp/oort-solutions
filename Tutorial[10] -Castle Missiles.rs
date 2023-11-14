@@ -5,12 +5,12 @@
 /**************************************************************
 * Tutorial 10: Radio
 * Author: Christopher Dean
-* Last Update: 11/13/23
+* Last Update: 11/08/23
 * Adjusted to using the radio on channel 2 to supply position
 * and velocity
 * Completely rebuilt organization with multiple ship
 * sub types
-* 13.300 on tutorial 10
+* 25.717s on tutorial 10
 ****************************************************************/
 const BULLET_SPEED: f64 = 1000.0; // m/s
 const MISSILE_SPEED: f64 = 850.0;
@@ -550,7 +550,7 @@ impl XMissle {
 
             }
             target_acceleration = (target_velocity - stored_target.velocity);
-            let next_target = target + (target_velocity * 1.15) * distance_ratio.abs() + (target_acceleration * 160.0) - oort_api::prelude::velocity();
+            let next_target = target + (target_velocity * 1.15) * distance_ratio.abs() + (target_acceleration * 145.0) - oort_api::prelude::velocity();
             return Some(next_target);          
         }
         return Some(target + (target_velocity - velocity) * distance_ratio.abs());        
