@@ -5,12 +5,12 @@
 /**************************************************************
 * Tutorial 10: Radio
 * Author: Christopher Dean
-* Last Update: 11/08/23
+* Last Update: 11/13/23
 * Adjusted to using the radio on channel 2 to supply position
 * and velocity
 * Completely rebuilt organization with multiple ship
 * sub types
-* 25.717s on tutorial 10
+* 13.300 on tutorial 10
 ****************************************************************/
 const BULLET_SPEED: f64 = 1000.0; // m/s
 const MISSILE_SPEED: f64 = 850.0;
@@ -18,11 +18,11 @@ const TICKS_PER_SECOND: f64 = 60.0;
 const BULLET_SPEED_PER_TICK: f64 = BULLET_SPEED / TICKS_PER_SECOND;
 const TICKS_PER_FIRE: u32 = 4;
 const SEEK_AND_DESTROY: u64 = 1337;
-const MISSILE_OUT: usize = 2;
 const MISSILE_RELOAD_TIME:u32 = 120;
 const RADIO_COUNT:usize = 4; // 4 radios for frigate, 8 for a cruiser
 const MISSILE_RADIO:usize = RADIO_COUNT-1; // last radio
 const POSITIONING_CHANNEL:usize = 2;
+const MISSILE_LOS_TUNE_FACTOR: f64 = 3.25;
 enum MessageID {
 
 }
@@ -37,6 +37,10 @@ pub struct CurveBehavior{
     throttle: f64    
 }
 
+#[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
+#[derive(PartialEq)]
 pub struct UnitDescription {
     class: Class,
     position: Vec2,
@@ -46,8 +50,12 @@ pub struct UnitDescription {
     lead_position: Option<Vec2>,
 }
 
+#[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
+#[derive(PartialEq)]
 enum RadarState {
-    InitState = 0,
+    Initialize = 0,
     BroadScan = 1,
     NarrowScan = 2,
     POIScan = 3,
@@ -55,6 +63,7 @@ enum RadarState {
 }
 
 pub struct RadarData {
+    step_size: f64,
     last_state_heading: Option<f64>,
     next_heading: Option<f64>,
     radar_state: RadarState,
@@ -65,13 +74,50 @@ pub struct RadarData {
 impl RadarData {
     pub fn create() -> RadarData {
         RadarData {
+            step_size: -0.0678,
             last_state_heading: None,
-            radar_state: RadarState::InitState,
+            radar_state: RadarState::Initialize,
             previous_state: RadarState::NoneState, 
             next_heading: None,
             tick_counter: 0
         }
     }
+    pub fn update_broad_scan(&mut self) {
+        self.last_state_heading = Some(radar_heading());
+        set_radar_width(TAU/16.0);
+        let next_heading = radar_heading() + self.step_size;
+        self.next_heading = Some(next_heading);
+        set_radar_heading(next_heading);
+        set_radar_max_distance(world_size()/4.0);      
+    }
+    pub fn update_narrow_scan(&mut self, position: Vec2, velocity: Vec2) {
+        self.previous_state = self.radar_state;
+        self.last_state_heading = Some(radar_heading());
+        set_radar_width(TAU/16.0);
+        let mut distance_scaler = 1.0;
+        let distance = position - oort_api::prelude::position();
+        let mut radar_length = distance.length();
+        if radar_length < 200.0 {
+            distance_scaler = 120.0/radar_length;
+            radar_length = 200.0;
+            set_radar_width(TAU/12.0);
+        }
+        let next_heading = (position + (velocity/TICKS_PER_SECOND * distance_scaler) - oort_api::prelude::position()).angle();
+        self.next_heading = Some(next_heading);
+        set_radar_heading(next_heading);
+        
+        set_radar_max_distance(radar_length * 1.335);
+        self.radar_state = RadarState::NarrowScan;
+    }
+    pub fn update_poi_scan(&mut self) {
+
+    }
+    pub fn initialize(&mut self) {
+        self.previous_state = RadarState::Initialize;
+        self.radar_state = RadarState::BroadScan;
+    }
+    
+
 }
 
 pub struct ZCruiser {
@@ -235,7 +281,7 @@ impl TyFighter {
     }
     pub fn track(&mut self, target: Vec2, target_velocity: Vec2, velocity: Vec2) -> Option<Vec2> {
         if let Some(stored_target) = self.target.as_mut() {
-            self.should_fire_gun0 = angle_diff(heading(), stored_target.target_heading).abs() < 0.0192; 
+            self.should_fire_gun0 = angle_diff(heading(), stored_target.target_heading).abs() < 0.2; 
             let length_meters = (target - position()).length() as f64;
             let distance_ratio = (length_meters / MISSILE_SPEED);     
             let mut target_acceleration = vec2(0.0, 0.0);
@@ -253,10 +299,10 @@ impl TyFighter {
     }
 
 
-    /********************************************************************************************************
+    /*****************************************************************************************************************
     * ** Diagnostics **
     * Functions used to update the systems diagnostics
-    *********************************************************************************************************/
+    ******************************************************************************************************************/
         pub fn draw_diagnostics(&mut self) {
             
             //debug!("Current State: {}", self.state);
@@ -276,7 +322,8 @@ impl TyFighter {
             }
             draw_line(position(), target(), 0x00ff00);
         }
-    /*******************************************************************************************************/
+    /******************************************************************************************************************/
+
     /*******************************************************************************************************************
     * ** Navigation System ** 
     * Handles navigating and calculating the next thruster vectors based on the target_position
@@ -299,6 +346,7 @@ impl TyFighter {
         }
         return vec2(0.0, 0.0);
     }
+
     /********************************************************************************************************************
     * ** Engine Thrust and Drive System **
     * This code is responsible for updating the ships next torque and accelerate values
@@ -307,6 +355,7 @@ impl TyFighter {
         let c1: f64 = 2.0 * tune_factor.sqrt();
         tune_factor * angle_to_mark - c1 * angular_velocity()
     }
+
     // Calculates the smoothest and quickest stop torque value
     pub fn get_stop_torque(&mut self ) -> f64 {
         let mut ret_torque = 0.0;
@@ -371,7 +420,7 @@ impl TyFighter {
             } else {
                 curve.throttle = (ticks_to_accelerate  * max_angular_acceleration()) / 2.0;
             }
-            if rotation_angle.is_negative() {
+            if rotation_angle.is_sign_negative() {
                 curve.throttle *= -1.0;
             }
             curve.ticks_to_accel = (ticks_to_accelerate / 2.0) as u32;
@@ -425,7 +474,7 @@ impl TyFighter {
             t_velocity = target.velocity;
             t_position = target.position;            
             if let Some(lead_position) = target.lead_position {
-                self.acceleration = self.approach_and_orbit(550.0, 1050.0, position(), lead_position, t_velocity); 
+                self.acceleration = self.approach_and_orbit(600.0, 950.0, position(), lead_position, t_velocity); 
             } else {
                 self.acceleration = vec2(0.0,0.0);
             }
@@ -444,15 +493,31 @@ impl TyFighter {
 *
 *
 ******************************************************************************************/
+#[derive(Debug)]
+#[derive(Clone)]
+#[derive(Copy)]
+#[derive(PartialEq)]
+enum MissileStrategy {
+    Initialize,
+    FindTarget,
+    ApproachTrajectory,
+    SeekToKill,
+    GoBoom
+}
+
 pub struct XMissle {
     should_blow: bool,
-    target: Option<UnitDescription>
+    target: Option<UnitDescription>,
+    strategy:MissileStrategy,
+    radar: RadarData,
+    missile_ticks: u32,
+    last_target: Option<UnitDescription>
 }
 
 impl XMissle {
     // Initialize Ship->XMissle
-    pub fn configure_missle() -> Ship {        
-        set_radio_channel(MISSILE_OUT);
+    pub fn configure_missle() -> Ship {    
+        set_radio_channel(POSITIONING_CHANNEL);
         set_radar_width(PI/16.0);
         set_radar_heading(heading());
         Ship {
@@ -463,22 +528,32 @@ impl XMissle {
                 XMissle {
                     should_blow: false,
                     target: None,
+                    strategy:MissileStrategy::Initialize,
+                    radar: RadarData::create(),
+                    missile_ticks: 0,
+                    last_target: None
                 }
             ),
             shared_data: SharedData::create()
         }
     }
+    // TODO add bullet type
     pub fn track(&mut self, target: Vec2, target_velocity: Vec2, velocity: Vec2) -> Option<Vec2> {
-        if let Some(stored_target) = self.target.as_mut() {
-            let length_meters = (target - position()).length() as f64;
-            let distance_ratio = (length_meters / MISSILE_SPEED);     
+        let length_meters = (target - position()).length() as f64;
+        let distance_ratio = (length_meters / oort_api::prelude::velocity().length());    
+        if let Some(stored_target) = self.target.as_ref() {  // if stored target 
             let mut target_acceleration = vec2(0.0, 0.0);
-            target_acceleration = ((target_velocity - stored_target.velocity) * TICKS_PER_SECOND)/2.0;
-            let next_target = target + (target_velocity - velocity) * distance_ratio.abs();
-            stored_target.velocity = target_velocity;
+            let mut velocity_scaler = 1.0;
+            if self.last_target.is_some() {
+                let last_target = self.last_target.as_ref().unwrap();
+                let target_vector = target - last_target.position;
+
+            }
+            target_acceleration = (target_velocity - stored_target.velocity);
+            let next_target = target + (target_velocity * 1.15) * distance_ratio.abs() + (target_acceleration * 160.0) - oort_api::prelude::velocity();
             return Some(next_target);          
         }
-        return None;
+        return Some(target + (target_velocity - velocity) * distance_ratio.abs());        
     }
     
 
@@ -492,7 +567,9 @@ impl XMissle {
             let position_diff = next_position -  oort_api::prelude::position();
             let distance = position_diff.length();
             let target_heading = position_diff.angle();
-            let lead_position = self.track(position, velocity,  oort_api::prelude::velocity());
+            let lead_position = self.track(position, velocity,  oort_api::prelude::velocity()); 
+            //let data = self.target.as_mut().unwrap();           
+            self.last_target = self.target;
             self.target = Some(
                 UnitDescription{
                     class: Class::Unknown,
@@ -501,14 +578,23 @@ impl XMissle {
                     target_heading,
                     distance,
                     lead_position
-
                 }
             );
-        } else {
-            self.target = None;
-        }
+            self.radar.update_narrow_scan(position, velocity);
+        } 
     }
-    pub fn update_targets(&mut self)  {
+
+    // Radar Targets and POI Acquisition
+
+
+    fn initialize(&mut self) {
+        self.find_target();
+        self.strategy = MissileStrategy::FindTarget;
+        self.check_for_target();
+    }
+
+    fn find_target(&mut self) {
+        // look for target and then update radar
         if let Some(scanned_target) = scan() {
             // check if the target is a scan of an existing target
             // do calcs
@@ -516,7 +602,9 @@ impl XMissle {
             let position_diff = next_position -  oort_api::prelude::position();
             let distance = position_diff.length();
             let target_heading = position_diff.angle();
-            let lead_position = self.track(scanned_target.position, scanned_target.velocity,  oort_api::prelude::velocity());
+            let lead_position = self.track(scanned_target.position, scanned_target.velocity,  oort_api::prelude::velocity());            
+            //let data = self.target.as_mut().unwrap();           
+            self.last_target = self.target;
             self.target = Some(
                 UnitDescription{
                     class: scanned_target.class,
@@ -525,71 +613,147 @@ impl XMissle {
                     target_heading,
                     distance,
                     lead_position
-            });         
+            });
+            if self.strategy == MissileStrategy::FindTarget {
+                self.strategy = MissileStrategy::ApproachTrajectory;
+            }
+            self.radar.update_narrow_scan(scanned_target.position, scanned_target.velocity);
+            // adjust radar to center on the target and lock  
         } else {
+            // TODO: Add some previous state transition logic,
+            // if the target was lost after SeekToKill, or GoBoom, maybe its dead or out of reach
+            // check fuel left
+            // use the old targets location and velocity to determine the next heading
             self.target = None;
+            self.strategy = MissileStrategy::FindTarget;
+            self.radar.update_broad_scan();            
+            // update sweep
         }
     }
-    // Radar Targets and POI Acquisition
-    pub fn update_radar(&mut self, _shared:&mut SharedData) {        
-        self.update_targets();
+
+    fn approach_trajectory(&mut self) {
+        // calculate trajectory and rotate and determine if on straight course, if so keep turning to head directly into unit
+        self.find_target();
         if self.target.is_some() {
-            // unwrap get target by reference
-            let target_data = self.target.as_ref().unwrap();
-            set_radar_heading( (target_data.position - position()).angle());
-        } else {
-            set_radar_heading(radar_heading() + 0.125);
+            let target = self.target.as_ref().unwrap();
+            let distance = target.position - position();
+            if target.lead_position.is_some() {
+                turn(angle_diff(heading(), (target.lead_position.unwrap() - position()).angle()));
+            } else {
+                turn(angle_diff(heading(), target.target_heading));
+            }
+            if distance.length()  > 800.0 {
+                //check if the difference between approach angle and vector heading
+                if self.missile_ticks < 88 {
+                    // continue to drift towards
+                    // adjusting angle     
+                    accelerate((target.lead_position.unwrap() - position()) * 0.1);
+                } else if self.missile_ticks < 180 {
+                    accelerate((target.lead_position.unwrap() - position()) * 0.01 + target.velocity/TICKS_PER_SECOND);
+                    // 3 quarters of the float
+                } else {                    
+                    self.strategy = MissileStrategy::SeekToKill;
+                    self.seek_to_kill();
+                }                
+                self.missile_ticks += 1;
+            }else {
+                self.strategy = MissileStrategy::SeekToKill;
+                self.seek_to_kill();
+            }
         }
-        
-        //self.seek();
     }
+
+    fn seek_to_kill(&mut self) {
+        self.find_target();
+        if self.target.is_some() {
+            let target = self.target.as_ref().unwrap(); 
+            let velocity_r = target.velocity - velocity();
+            let range_difference = target.position - position();
+            let normalized_range = range_difference / vec2(range_difference.x.abs(), range_difference.y.abs());
+            //let acceleration = MISSILE_LOS_TUNE_FACTOR * vec2(range_difference.x.abs(), range_difference.y.abs()) * (range_difference * velocity_r / velocity_r * velocity_r);
+            
+            turn(angle_diff(heading(), (target.lead_position.unwrap() - position()).angle()) * 10.0);
+            accelerate(((target.lead_position.unwrap() - position()) - target.velocity));
+            
+            //accelerate(acceleration);
+            if range_difference.length() < 180.0  || fuel() == 0.0{
+                let amount_to_turn = angle_diff(heading(), (target.position - position()).angle());
+                turn(amount_to_turn * 30.0);
+                self.strategy = MissileStrategy::GoBoom;
+            }
+        }
+    }    
+
+    fn go_boom(&mut self) {
+        self.find_target();
+        if let Some(target) = self.target.as_ref() {
+            let distance = target.position - position();
+            let amount_to_turn = angle_diff(heading(), distance.angle());
+            turn(amount_to_turn * 20.0);
+            debug!("Amount to turn: {} radians", amount_to_turn);
+            debug!("Not Boom distance {}", distance.length());
+            if amount_to_turn.abs() < 0.02 && distance.length() < 65.0 {
+                debug!("Boom distance {}", distance.length());
+                explode();                
+            }
+            if amount_to_turn.abs() < 0.22 && distance.length() < 55.0 {
+                debug!("Boom distance {}", distance.length());
+                explode();
+            }
+            accelerate(distance - target.velocity);
+        }
+        if fuel() == 0.0  {
+            explode();
+        }
+    }
+
     // High level missile procedural logic
     pub fn tick(&mut self, _shared:&mut SharedData) {
-        if self.target.is_none() { 
-            self.check_for_target();
+
+        match self.strategy {
+            MissileStrategy::Initialize => self.initialize(),
+            MissileStrategy::FindTarget => self.find_target(),
+            MissileStrategy::ApproachTrajectory => self.approach_trajectory(),
+            MissileStrategy::SeekToKill => self.seek_to_kill(),
+            _ => self.go_boom()
+
         }
-        let mut has_target = false;
-        let mut target_position = vec2(0.0,0.0);
-        let mut target_velocity = vec2(0.0,0.0);
-        let mut target_distance = 0.0;
-        let mut target_heading = 0.0;
-        let mut target_class = Class::Unknown;
-        if(self.should_blow) { 
-            explode();
-        } else {
-            if self.target.is_some() {
-                let target_desc = self.target.as_ref().unwrap();
-                target_position = target_desc.position;
-                target_velocity = target_desc.velocity;
-                target_heading = target_desc.target_heading;
-                target_distance = target_desc.distance;
-                target_class = target_desc.class;
-                has_target = true;     
-            }  
-            if has_target {
-                let line_diff = target_position - position();
-                let current_diff = angle_diff(heading(), line_diff.angle());
-                match target_class {
-                    Class::Fighter =>{debug!("Target Class: {}", "Fighter");}
-                    _ => {debug!("Target Class: {}", "Unknown"); }
-                }
-                let true_distance = 0.0;
-                
-                debug!("Target Position: {}", target_position);
-                debug!("Distance from target: {}", line_diff.length());
-                debug!("Target velocity: {}", target_velocity);
-                debug!("Target Heading: {}", target_heading);
-                debug!("Position: {} ", position());
-                debug!("Velocity: {}", velocity());
-                turn(current_diff * 1.09);
-                accelerate((line_diff + (target_velocity * 2.255  * ((line_diff/MISSILE_SPEED) + 0.36))));            
-                draw_line(target_position, position(), 0xff0000);
-                if line_diff.length() <= 75.0 ||  fuel() == 0.0 {
-                    self.should_blow = true;
-                }
-            }         
+        self.draw_diagnostics();      
+    }
+
+    fn draw_diagnostics(&mut self) {
+        debug!("Missile Ticks: {}", self.missile_ticks);
+        debug!("Velocity (per sec): {}", velocity());
+        debug!("Velocity (per tick): {}", velocity() / TICKS_PER_SECOND);
+        debug!("Current Strategy: {:?}", self.strategy); 
+        if self.target.is_some() {
+            let target = self.target.as_ref().unwrap();
+            let line_diff = target.position - position();
+            let current_diff = angle_diff(heading(), line_diff.angle());
+            match target.class {
+                Class::Fighter =>{debug!("Target Class: {}", "Fighter");}
+                _ => {debug!("Target Class: {}", "Unknown"); }
+            }
+            let true_distance = 0.0;            
+            debug!("Target Position: {}", target.position);
+            debug!("Distance from target: {}", line_diff.length());
+            debug!("Target velocity: {}", target.velocity);
+            debug!("Target Heading: {}", target.target_heading);
+            debug!("Position: {} ", position());
+            debug!("Velocity: {}", velocity());
+            //turn(current_diff * 1.09);
+            //accelerate((line_diff + (target_velocity * 2.255  * ((line_diff/MISSILE_SPEED) + 0.36))));
+            if target.lead_position.is_some() {     
+                draw_line(target.lead_position.unwrap(), position(), 0xff0000);
+                draw_line(target.lead_position.unwrap(), target.position, 0x00ff00);
+            } else {     
+                draw_line(target.position, position(), 0xff0000);
+                draw_line(target.lead_position.unwrap(), target.position, 0x00ff00);
+            }
+            if self.last_target.is_some() {
+                draw_line(self.last_target.as_ref().unwrap().position, target.position, 0x000f0f);
+            }
             debug!("Fuel {} ", fuel());
-            self.update_radar(_shared);
         }
     }
     
@@ -612,7 +776,7 @@ pub struct SupaFrigate {
 }
 impl SupaFrigate {  
     pub fn configure_frigate() -> Ship {        
-        set_radio_channel(MISSILE_OUT);
+        set_radio_channel(POSITIONING_CHANNEL);
         set_radar_width(0.0185);
         Ship {
             cruiser_data: None,
